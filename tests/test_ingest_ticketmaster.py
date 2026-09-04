@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from data.ingest_ticketmaster import fetch_events
+from data.ingest_ticketmaster import fetch_events, fetch_events_for_cities
 
 
 def _make_event(
@@ -11,12 +11,15 @@ def _make_event(
     artist="The Testers",
     venue="Test Arena",
     city="Austin",
+    state="TX",
     event_date="2026-10-01",
-    price_min=45.0,
-    price_max=250.0,
+    lat=30.280735,
+    lon=-97.730837,
+    genre="Hip-Hop/Rap",
     include_attractions=True,
     include_venue=True,
-    include_price=True,
+    include_location=True,
+    include_classification=True,
 ):
     event = {
         "id": event_id,
@@ -27,9 +30,12 @@ def _make_event(
     if include_attractions:
         event["_embedded"]["attractions"] = [{"name": artist}]
     if include_venue:
-        event["_embedded"]["venues"] = [{"name": venue, "city": {"name": city}}]
-    if include_price:
-        event["priceRanges"] = [{"type": "standard", "currency": "USD", "min": price_min, "max": price_max}]
+        venue_data = {"name": venue, "city": {"name": city}, "state": {"stateCode": state}}
+        if include_location:
+            venue_data["location"] = {"latitude": str(lat), "longitude": str(lon)}
+        event["_embedded"]["venues"] = [venue_data]
+    if include_classification:
+        event["classifications"] = [{"genre": {"name": genre}}]
     return event
 
 
@@ -56,22 +62,26 @@ def test_happy_path_maps_all_fields(mock_get, mock_sleep):
     assert record["artist"] == "The Testers"
     assert record["venue"] == "Test Arena"
     assert record["city"] == "Austin"
+    assert record["state"] == "TX"
     assert record["event_date"] == "2026-10-01"
-    assert record["price_min"] == 45.0
-    assert record["price_max"] == 250.0
-    assert record["snapshot_date"] == record["first_seen_date"]
+    assert record["lat"] == 30.280735
+    assert record["lon"] == -97.730837
+    assert record["genre"] == "Hip-Hop/Rap"
 
 
 @patch("data.ingest_ticketmaster.time.sleep")
 @patch("data.ingest_ticketmaster.requests.get")
-def test_missing_price_data_is_included_with_none(mock_get, mock_sleep):
-    mock_get.return_value = _make_response([_make_event(include_price=False)])
+def test_missing_location_and_genre_are_included_with_none(mock_get, mock_sleep):
+    mock_get.return_value = _make_response(
+        [_make_event(include_location=False, include_classification=False)]
+    )
 
     results = fetch_events("Austin", api_key="fake-key")
 
     assert len(results) == 1
-    assert results[0]["price_min"] is None
-    assert results[0]["price_max"] is None
+    assert results[0]["lat"] is None
+    assert results[0]["lon"] is None
+    assert results[0]["genre"] is None
 
 
 @patch("data.ingest_ticketmaster.time.sleep")
@@ -111,11 +121,48 @@ def test_pagination_fetches_all_pages(mock_get, mock_sleep):
     assert mock_get.call_args_list[1].kwargs["params"]["page"] == 1
 
 
+@patch("data.ingest_ticketmaster.time.sleep")
+@patch("data.ingest_ticketmaster.requests.get")
+def test_stops_before_exceeding_ticketmaster_paging_depth_limit(mock_get, mock_sleep):
+    # PAGE_SIZE is 200, so Ticketmaster's page*size<1000 limit allows pages 0-4 (5 pages).
+    mock_get.return_value = _make_response([_make_event()], total_pages=50, page_number=0)
+
+    fetch_events("Austin", api_key="fake-key")
+
+    assert mock_get.call_count == 5
+    assert all(call.kwargs["params"]["page"] < 5 for call in mock_get.call_args_list)
+
+
 @patch("data.ingest_ticketmaster.requests.get")
 def test_missing_api_key_raises_before_any_request(mock_get, monkeypatch):
     monkeypatch.delenv("TICKETMASTER_API_KEY", raising=False)
     with patch("data.ingest_ticketmaster.load_dotenv"):
         with pytest.raises(ValueError):
             fetch_events("Austin", api_key=None)
+
+    mock_get.assert_not_called()
+
+
+@patch("data.ingest_ticketmaster.time.sleep")
+@patch("data.ingest_ticketmaster.requests.get")
+def test_fetch_events_for_cities_concatenates_results(mock_get, mock_sleep):
+    austin_response = _make_response([_make_event(event_id="austin-event", city="Austin")])
+    denver_response = _make_response([_make_event(event_id="denver-event", city="Denver")])
+    mock_get.side_effect = [austin_response, denver_response]
+
+    results = fetch_events_for_cities(["Austin", "Denver"], api_key="fake-key")
+
+    assert mock_get.call_count == 2
+    assert {r["event_id"] for r in results} == {"austin-event", "denver-event"}
+    assert mock_get.call_args_list[0].kwargs["params"]["city"] == "Austin"
+    assert mock_get.call_args_list[1].kwargs["params"]["city"] == "Denver"
+
+
+@patch("data.ingest_ticketmaster.requests.get")
+def test_fetch_events_for_cities_missing_api_key_raises_before_any_request(mock_get, monkeypatch):
+    monkeypatch.delenv("TICKETMASTER_API_KEY", raising=False)
+    with patch("data.ingest_ticketmaster.load_dotenv"):
+        with pytest.raises(ValueError):
+            fetch_events_for_cities(["Austin"], api_key=None)
 
     mock_get.assert_not_called()
