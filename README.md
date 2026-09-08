@@ -4,8 +4,7 @@ An interactive map showing upcoming concert activity across US cities, built
 from the Ticketmaster Discovery API, opening as its own desktop window (no
 browser, no terminal). Every run pulls fresh data automatically, with a
 loading screen while it does. Click a city marker to see its actual upcoming
-shows in a slide-out panel. See [CLAUDE.md](CLAUDE.md) for the full data
-model and architecture.
+shows in a slide-out panel.
 
 (This project pivoted from an earlier ticket-price-tracking concept — most
 Ticketmaster events never expose price data, which made that version
