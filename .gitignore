@@ -1,6 +1,5 @@
 .env
 CLAUDE.md
-data/snapshots.csv
 outputs/
 __pycache__/
 .pytest_cache/
